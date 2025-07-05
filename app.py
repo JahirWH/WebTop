@@ -83,7 +83,7 @@ def obtener_temperatura_cpu():
         except:
             pass
 
-        # Método 4: Intentar con lm-sensors (si está instalado)
+        # Método 4: Intentar con lm-sensors (
         try:
             resultado = subprocess.run(['sensors', '-j'], capture_output=True, text=True, timeout=3)
             if resultado.returncode == 0:
@@ -196,6 +196,7 @@ def obtener_info_sistema():
         return {'error': str(error), 'marca_tiempo': datetime.now().isoformat()}
 
 @aplicacion.route('/')
+# appi para la ruta principal
 def pagina_principal():
     return render_template_string('''
 <!DOCTYPE html>
@@ -220,7 +221,8 @@ def pagina_principal():
         h1 {
             text-align: center;
             color: #ffffff;
-            margin-bottom: 30px;
+            margin-bottom: 0px;
+            margin:0px  ;
         }
         .grid-principal {
             display: grid;
@@ -599,7 +601,7 @@ def pagina_principal():
 
 @aplicacion.route('/api/temperatura')
 def api_temperatura():
-    """API específica solo para temperatura CPU"""
+    """API solo para temperatura CPU"""
     try:
         temp_cpu = obtener_temperatura_cpu()
         return jsonify({
