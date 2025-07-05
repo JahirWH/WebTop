@@ -1,6 +1,7 @@
 from flask import Flask, render_template_string, jsonify
 import subprocess
 import psutil
+import time
 from datetime import datetime
 
 aplicacion = Flask(__name__)
@@ -10,7 +11,7 @@ def obtener_info_gpu():
         resultado = subprocess.run(
             ['nvidia-smi', '--query-gpu=utilization.gpu,memory.used,memory.total,temperature.gpu,name', 
              '--format=csv,noheader,nounits'], 
-            capture_output=True, text=True, timeout=5
+            capture_output=True, text=True, timeout=3
         )
         if resultado.returncode == 0:
             gpus = []
@@ -31,20 +32,151 @@ def obtener_info_gpu():
     return [{'uso': 0, 'memoria_usada': 0, 'memoria_total': 0, 'temperatura': 0, 'nombre': 'No disponible'}]
 
 def obtener_temperatura_cpu():
+    """Obtiene la temperatura de la CPU de múltiples fuentes"""
     try:
-        # Intentar leer temperatura CPU desde /sys/class/thermal/
-        with open('/sys/class/thermal/thermal_zone0/temp', 'r') as f:
-            temp_cpu = int(f.read()) / 1000
-        return temp_cpu
+        # Método 1: Intentar con psutil.sensors_temperatures()
+        try:
+            temperaturas = psutil.sensors_temperatures()
+            if 'coretemp' in temperaturas:
+                # Intel CPUs
+                return temperaturas['coretemp'][0].current
+            elif 'k10temp' in temperaturas:
+                # AMD CPUs
+                return temperaturas['k10temp'][0].current
+            elif 'cpu_thermal' in temperaturas:
+                # ARM CPUs
+                return temperaturas['cpu_thermal'][0].current
+            elif temperaturas:
+                # Cualquier otro sensor disponible
+                for sensor_name, sensor_list in temperaturas.items():
+                    if sensor_list:
+                        return sensor_list[0].current
+        except:
+            pass
+
+        # Método 2: Intentar leer desde /sys/class/thermal/
+        try:
+            # Buscar en diferentes thermal zones
+            for i in range(10):  # Probar hasta thermal_zone9
+                try:
+                    with open(f'/sys/class/thermal/thermal_zone{i}/temp', 'r') as f:
+                        temp = int(f.read()) / 1000
+                        if 20 <= temp <= 100:  # Temperatura válida
+                            return temp
+                except:
+                    continue
+        except:
+            pass
+
+        # Método 3: Intentar con hwmon
+        try:
+            import glob
+            hwmon_paths = glob.glob('/sys/class/hwmon/hwmon*/temp*_input')
+            for path in hwmon_paths:
+                try:
+                    with open(path, 'r') as f:
+                        temp = int(f.read()) / 1000
+                        if 20 <= temp <= 100:  # Temperatura válida
+                            return temp
+                except:
+                    continue
+        except:
+            pass
+
+        # Método 4: Intentar con lm-sensors (si está instalado)
+        try:
+            resultado = subprocess.run(['sensors', '-j'], capture_output=True, text=True, timeout=3)
+            if resultado.returncode == 0:
+                import json
+                datos = json.loads(resultado.stdout)
+                for sensor in datos.values():
+                    if isinstance(sensor, dict):
+                        for key, value in sensor.items():
+                            if 'temp' in key.lower() and 'input' in key:
+                                if isinstance(value, (int, float)) and 20 <= value <= 100:
+                                    return value
+        except:
+            pass
+
+    except Exception as e:
+        print(f"Error al obtener temperatura CPU: {e}")
+    
+    # Si no se puede obtener la temperatura real, estimar basado en el uso de CPU
+    try:
+        uso_cpu = psutil.cpu_percent(interval=0.1)
+        # Estimación simple: temperatura base + factor por uso
+        temp_estimada = 35 + (uso_cpu * 0.5)  # 35°C base + 0.5°C por % de uso
+        return min(temp_estimada, 85)  # Máximo 85°C
     except:
-        # Si no se puede leer, usar un valor estimado basado en el uso
-        return 45
+        return 45  # Valor por defecto
+
+def debug_temperatura():
+    """Función para debug: muestra qué métodos de temperatura están disponibles"""
+    print("=== DEBUG TEMPERATURA CPU ===")
+    
+    # Método 1: psutil.sensors_temperatures()
+    try:
+        temperaturas = psutil.sensors_temperatures()
+        print(f"1. psutil.sensors_temperatures(): {temperaturas}")
+        if temperaturas:
+            for nombre, sensores in temperaturas.items():
+                print(f"   - {nombre}: {sensores}")
+    except Exception as e:
+        print(f"1. psutil.sensors_temperatures(): Error - {e}")
+    
+    # Método 2: /sys/class/thermal/
+    print("2. /sys/class/thermal/ zones:")
+    for i in range(5):
+        try:
+            with open(f'/sys/class/thermal/thermal_zone{i}/temp', 'r') as f:
+                temp = int(f.read()) / 1000
+                print(f"   - thermal_zone{i}: {temp}°C")
+        except:
+            print(f"   - thermal_zone{i}: No disponible")
+    
+    # Método 3: hwmon
+    try:
+        import glob
+        hwmon_paths = glob.glob('/sys/class/hwmon/hwmon*/temp*_input')
+        print(f"3. hwmon paths encontrados: {hwmon_paths}")
+        for path in hwmon_paths[:3]:  # Solo mostrar los primeros 3
+            try:
+                with open(path, 'r') as f:
+                    temp = int(f.read()) / 1000
+                    print(f"   - {path}: {temp}°C")
+            except:
+                print(f"   - {path}: Error al leer")
+    except Exception as e:
+        print(f"3. hwmon: Error - {e}")
+    
+    # Método 4: lm-sensors
+    try:
+        resultado = subprocess.run(['sensors', '-j'], capture_output=True, text=True, timeout=3)
+        if resultado.returncode == 0:
+            print(f"4. lm-sensors disponible: {len(resultado.stdout)} caracteres")
+        else:
+            print("4. lm-sensors: No disponible")
+    except:
+        print("4. lm-sensors: No instalado")
+    
+    print("=== FIN DEBUG ===")
+
+@aplicacion.route('/debug')
+def debug_route():
+    """Ruta para debug de temperatura"""
+    debug_temperatura()
+    return jsonify({
+        'temperatura_actual': obtener_temperatura_cpu(),
+        'mensaje': 'Revisa la consola del servidor para ver el debug completo'
+    })
 
 def obtener_info_sistema():
     try:
         porcentaje_cpu = psutil.cpu_percent(interval=1.5)
         memoria = psutil.virtual_memory()
+        time.sleep(1)
         temp_cpu = obtener_temperatura_cpu()
+            
         
         return {
             'procesador': {
@@ -441,15 +573,41 @@ def pagina_principal():
             actualizarInformacion();
         }
         
+        function actualizarSoloTemperatura() {
+            fetch('/api/temperatura')
+                .then(respuesta => respuesta.json())
+                .then(datos => {
+                    if (datos.temperatura) {
+                        actualizarTemperaturaCPU(datos.temperatura);
+                    }
+                })
+                .catch(error => {
+                    console.error('Error al obtener temperatura:', error);
+                });
+        }
+        
         document.addEventListener('DOMContentLoaded', function() {
             inicializarGraficos();
             actualizarInformacion();
-            setInterval(actualizarInformacion, 5000);
+            setInterval(actualizarInformacion, 3000); // Datos completos cada 5 segundos
+            setInterval(actualizarSoloTemperatura, 1000); // Temperatura cada segundo
         });
     </script>
 </body>
 </html>
     ''')
+
+@aplicacion.route('/api/temperatura')
+def api_temperatura():
+    """API específica solo para temperatura CPU"""
+    try:
+        temp_cpu = obtener_temperatura_cpu()
+        return jsonify({
+            'temperatura': temp_cpu,
+            'marca_tiempo': datetime.now().isoformat()
+        })
+    except Exception as error:
+        return jsonify({'error': str(error), 'marca_tiempo': datetime.now().isoformat()})
 
 @aplicacion.route('/api/sistema')
 def api_sistema():
