@@ -3,8 +3,101 @@ import subprocess
 import psutil
 import time
 from datetime import datetime
+import polars as pl
+import os
+import csv
+import threading
 
+
+
+CSV_RUTA = 'registro.csv'
 aplicacion = Flask(__name__)
+
+
+def crea_archivo_csv():
+    """Crea el archivo CSV con las cabeceras si no existe"""
+    if not os.path.exists(CSV_RUTA):
+        # Crear un DataFrame con una fila vacía para que escriba las cabeceras
+        df = pl.DataFrame({
+            "marca_tiempo": [None],
+            "uso_cpu": [None],
+            "temp_cpu": [None],
+            "uso_ram": [None],
+            "ram_usada_gb": [None],
+            "ram_total_gb": [None],
+        })
+        # Escribir el DataFrame con cabeceras
+        df.write_csv(CSV_RUTA, include_header=True)
+    else:
+        # Verificar que el archivo existente tenga las cabeceras correctas
+        try:
+            with open(CSV_RUTA, 'r') as f:
+                first_line = f.readline().strip()
+                expected_headers = "marca_tiempo,uso_cpu,temp_cpu,uso_ram,ram_usada_gb,ram_total_gb"
+                if first_line != expected_headers:
+                    # Si las cabeceras no coinciden, recrear el archivo
+                    df = pl.DataFrame({
+                        "marca_tiempo": [None],
+                        "uso_cpu": [None],
+                        "temp_cpu": [None],
+                        "uso_ram": [None],
+                        "ram_usada_gb": [None],
+                        "ram_total_gb": [None],
+                    })
+                    df.write_csv(CSV_RUTA, include_header=True)
+        except Exception as e:
+            print(f"Error verificando archivo CSV: {e}")
+            # Si hay error al leer, recrear el archivo
+            df = pl.DataFrame({
+                "marca_tiempo": [None],
+                "uso_cpu": [None],
+                "temp_cpu": [None],
+                "uso_ram": [None],
+                "ram_usada_gb": [None],
+                "ram_total_gb": [None],
+            })
+            df.write_csv(CSV_RUTA, include_header=True)
+
+def guardar_fila_csv(datos):
+    """Guarda una nueva fila en el CSV"""
+    try:
+        # Crear un DataFrame con los datos actuales
+        fila = pl.DataFrame({
+            "marca_tiempo": [datos['marca_tiempo']],
+            "uso_cpu": [datos['procesador']['uso']],
+            "temp_cpu": [datos['procesador']['temperatura']],
+            "uso_ram": [datos['memoria']['uso']],
+            "ram_usada_gb": [datos['memoria']['usada_gb']],
+            "ram_total_gb": [datos['memoria']['total_gb']],
+        })
+        
+        # Verificar si el archivo existe y tiene contenido
+        file_exists = os.path.exists(CSV_RUTA) and os.path.getsize(CSV_RUTA) > 0
+        
+        # Escribir la fila (append si el archivo existe y no está vacío)
+        fila.write_csv(
+            CSV_RUTA,
+            include_header=not file_exists,  # Solo incluir cabecera si el archivo no existe o está vacío
+            separator=",",
+            mode='a' if file_exists else 'w'
+        )
+    except Exception as e:
+        print(f"Error al guardar en CSV: {e}")
+        # Intentar recrear el archivo si hay error
+        crea_archivo_csv()
+        # Volver a intentar guardar
+        fila.write_csv(CSV_RUTA, include_header=False, separator=",", mode='a')
+def iniciar_registro_csv(intervalo=5):
+    """Inicia un hilo que registra los datos en CSV cada intervalo"""
+    def registrar():
+        while True:
+            datos = obtener_info_sistema()
+            guardar_fila_csv(datos)
+            time.sleep(intervalo)
+    
+    hilo = threading.Thread(target=registrar, daemon=True)
+    hilo.start()
+    
 
 def obtener_info_gpu():
     try:
@@ -619,6 +712,13 @@ def api_sistema():
 def api_gpu():
     return jsonify(obtener_info_gpu())
 
+# @aplicacion.route('/api/csv')
+# def api_csv():
+#     "Api para hacer graficas"
+#     return jsonify(csv())
+ 
 if __name__ == '__main__':
     print("Servidor iniciado en: http://localhost:5000")
+    crea_archivo_csv()
+    iniciar_registro_csv(intervalo=5)
     aplicacion.run(host='0.0.0.0', port=5000, debug=True)
